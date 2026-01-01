@@ -1,0 +1,45 @@
+# SMakefile for Open
+# 
+# Open - Intelligently open files, drawers, and executables
+#
+
+# Program name
+PROGRAM = Open
+
+# Source files
+SRCS = open.c
+
+# Object files
+OBJS = open.o
+
+# Compiler and linker
+CC = sc
+LINK = slink
+
+# Default target
+all: $(PROGRAM)
+
+# Create the Open executable
+$(PROGRAM): $(OBJS)
+	$(LINK) FROM sc:lib/c.o $(OBJS) TO $(PROGRAM) STRIPDEBUG NODEBUG LIB lib:small.lib sc:lib/sc.lib BATCH
+
+# Compile the source files
+.c.o:
+	$(CC) $*.c OBJNAME=$*.o IDIR=include:
+
+# Compile Open files
+open.o: open.c
+	$(CC) open.c OBJNAME=open.o IDIR=include:
+
+# Clean target
+clean:
+	Delete $(OBJS) $(PROGRAM) open.o
+
+# Install target
+install:
+	@echo "Installing Open to SDK/C..."
+	@copy $(PROGRAM) to /SDK/C/$(PROGRAM) CLONE
+
+# Dependencies
+open.o: open.c
+
