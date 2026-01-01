@@ -12,6 +12,7 @@
 #include <intuition/intuitionbase.h>
 #include <workbench/icon.h>
 #include <workbench/workbench.h>
+#include <workbench/startup.h>
 #include <datatypes/datatypes.h>
 #include <datatypes/datatypesclass.h>
 #include <utility/tagitem.h>
@@ -66,15 +67,15 @@ extern struct Library *UtilityBase;
 BOOL InitializeLibraries(VOID);
 VOID Cleanup(VOID);
 VOID ShowUsage(VOID);
-LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo);
+LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo, BOOL forcePrint, BOOL forceMail, BOOL showAll);
 BOOL IsDrawer(STRPTR fileName, BPTR fileLock);
 BOOL IsExecutable(STRPTR fileName, BPTR fileLock);
 BOOL IsBinaryAsset(STRPTR fileName);
 BOOL IsInfoFile(STRPTR fileName);
-BOOL OpenDrawer(STRPTR drawerPath);
+BOOL OpenDrawer(STRPTR drawerPath, BOOL showAll);
 BOOL OpenExecutable(STRPTR execPath);
 BOOL OpenInfoFile(STRPTR fileName, BPTR fileLock);
-BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo);
+BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo, BOOL forcePrint, BOOL forceMail);
 BOOL IsDefIconsRunning(VOID);
 STRPTR GetDefIconsTypeIdentifier(STRPTR fileName, BPTR fileLock);
 STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier);
@@ -99,69 +100,214 @@ static const char *binaryAssets[] = {
 /* Main entry point */
 int main(int argc, char *argv[])
 {
-    struct RDArgs *rda = NULL;
+    struct WBStartup *wbs = NULL;
+    struct WBArg *wbarg;
+    SHORT i;
+    BOOL fromWorkbench = FALSE;
     LONG result = RETURN_OK;
-    STRPTR fileName = NULL;
-    STRPTR forceTool = NULL;
-    BOOL forceBrowse = FALSE;
-    BOOL forceEdit = FALSE;
-    BOOL forceInfo = FALSE;
+    BOOL success = TRUE;
     
-    /* Command template */
-    static const char *template = "FILE/A,TOOL/K,BROWSE/S,EDIT/S,INFO/S";
-    LONG args[5];
+    /* Check if running from Workbench */
+    fromWorkbench = (argc == 0);
     
-    /* Initialize args array */
+    if (fromWorkbench) {
+        /* Workbench mode - get WBStartup message */
+        wbs = (struct WBStartup *)argv;
+        
+        /* Initialize libraries */
+        if (!InitializeLibraries()) {
+            LONG errorCode = IoErr();
+            PrintFault(errorCode ? errorCode : ERROR_OBJECT_NOT_FOUND, "Open");
+            return RETURN_FAIL;
+        }
+        
+        /* Check if we have any file arguments */
+        if (wbs->sm_NumArgs <= 1) {
+            /* No files to process - show error */
+            Printf("Open: No file specified.\n");
+            Printf("Open must be set as the default tool on a project icon.\n");
+            Cleanup();
+            return RETURN_FAIL;
+        }
+        
+        /* Process each file argument (skip index 0 which is our tool) */
+        for (i = 1, wbarg = &wbs->sm_ArgList[i]; i < wbs->sm_NumArgs; i++, wbarg++) {
+            BPTR oldDir = NULL;
+            
+            if (wbarg->wa_Lock && wbarg->wa_Name && *wbarg->wa_Name) {
+                /* Change to the file's directory */
+                oldDir = CurrentDir(wbarg->wa_Lock);
+                
+                /* Open the file */
+                if (OpenItem(wbarg->wa_Name, NULL, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE) != RETURN_OK) {
+                    success = FALSE;
+                }
+                
+                /* Restore original directory */
+                if (oldDir != NULL) {
+                    CurrentDir(oldDir);
+                }
+            }
+        }
+        
+        /* Cleanup */
+        Cleanup();
+        
+        return success ? RETURN_OK : RETURN_FAIL;
+    }
+    
+    /* CLI mode - parse arguments */
     {
-        LONG i;
-        for (i = 0; i < 5; i++) {
-            args[i] = 0;
+        struct RDArgs *rda = NULL;
+        STRPTR fileName = NULL;
+        STRPTR forceTool = NULL;
+        BOOL forceBrowse = FALSE;
+        BOOL forceEdit = FALSE;
+        BOOL forceInfo = FALSE;
+        BOOL forcePrint = FALSE;
+        BOOL forceMail = FALSE;
+        BOOL showAll = FALSE;
+        
+        /* Command template - matches DataType command */
+        static const char *template = "FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S";
+        LONG args[8];
+        
+        /* Initialize args array */
+        {
+            LONG i;
+            for (i = 0; i < 8; i++) {
+                args[i] = 0;
+            }
         }
-    }
-    
-    /* Parse command-line arguments */
-    rda = ReadArgs(template, args, NULL);
-    if (!rda) {
-        LONG errorCode = IoErr();
-        if (errorCode != 0) {
-            PrintFault(errorCode, "Open");
-        } else {
-            ShowUsage();
+        
+        /* Parse command-line arguments */
+        rda = ReadArgs(template, args, NULL);
+        if (!rda) {
+            LONG errorCode = IoErr();
+            if (errorCode != 0) {
+                PrintFault(errorCode, "Open");
+            } else {
+                ShowUsage();
+            }
+            return RETURN_FAIL;
         }
-        return RETURN_FAIL;
+        
+        /* Extract arguments */
+        forceTool = (STRPTR)args[1];
+        forceBrowse = (BOOL)(args[2] != 0);
+        forceEdit = (BOOL)(args[3] != 0);
+        forceInfo = (BOOL)(args[4] != 0);
+        forcePrint = (BOOL)(args[5] != 0);
+        forceMail = (BOOL)(args[6] != 0);
+        showAll = (BOOL)(args[7] != 0);
+        
+        /* Initialize libraries */
+        if (!InitializeLibraries()) {
+            LONG errorCode = IoErr();
+            PrintFault(errorCode ? errorCode : ERROR_OBJECT_NOT_FOUND, "Open");
+            FreeArgs(rda);
+            return RETURN_FAIL;
+        }
+        
+        /* FILE/M returns an array of string pointers (STRPTR *), last entry is NULL */
+        {
+            STRPTR *fileArray = (STRPTR *)args[0];
+            LONG fileCount = 0;
+            
+            /* Initialize result to OK - will be set to FAIL if any file fails */
+            result = RETURN_OK;
+            
+            if (fileArray && fileArray[0]) {
+                /* Process each file in the array */
+                LONG i = 0;
+                while (fileArray[i] != NULL) {
+                    fileName = fileArray[i];
+                    fileCount++;
+                    
+                    /* Open the item */
+                    if (OpenItem(fileName, forceTool, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail, showAll) != RETURN_OK) {
+                        result = RETURN_FAIL;
+                    }
+                    
+                    i++;
+                }
+            }
+            
+            /* If no files were provided, open current directory */
+            if (fileCount == 0) {
+                /* No arguments - open current directory */
+                BPTR currentDirLock = NULL;
+                STRPTR currentDirName = NULL;
+                UBYTE dirNameBuffer[256];
+                struct TagItem tags[3];
+                LONG tagIndex = 0;
+                
+                /* Get current directory lock using GetCurrentDir() */
+                currentDirLock = GetCurrentDir();
+                if (currentDirLock) {
+                    /* Get the directory name */
+                    if (NameFromLock(currentDirLock, dirNameBuffer, sizeof(dirNameBuffer))) {
+                        currentDirName = (STRPTR)dirNameBuffer;
+                        
+                        /* Build tags for OpenWorkbenchObjectA */
+                        if (showAll) {
+                            tags[tagIndex].ti_Tag = WBOPENA_Show;
+                            tags[tagIndex].ti_Data = DDFLAGS_SHOWALL;
+                            tagIndex++;
+                        }
+                        tags[tagIndex].ti_Tag = TAG_DONE;
+                        
+                        /* Open the current directory as a drawer */
+                        SetIoErr(0);
+                        result = OpenWorkbenchObjectA(currentDirName, tags) ? RETURN_OK : RETURN_FAIL;
+                        if (result != RETURN_OK) {
+                            LONG errorCode = IoErr();
+                            if (errorCode != 0) {
+                                PrintFault(errorCode, "Open");
+                            } else {
+                                Printf("Open: Failed to open current directory\n");
+                            }
+                        }
+                    } else {
+                        /* Failed to get directory name */
+                        Printf("Open: Could not get current directory name\n");
+                        result = RETURN_FAIL;
+                    }
+                } else {
+                    /* GetCurrentDir() returns NULL for root - that's valid, try to open root */
+                    struct TagItem tags[3];
+                    LONG tagIndex = 0;
+                    
+                    if (showAll) {
+                        tags[tagIndex].ti_Tag = WBOPENA_Show;
+                        tags[tagIndex].ti_Data = DDFLAGS_SHOWALL;
+                        tagIndex++;
+                    }
+                    tags[tagIndex].ti_Tag = TAG_DONE;
+                    
+                    SetIoErr(0);
+                    result = OpenWorkbenchObjectA("", tags) ? RETURN_OK : RETURN_FAIL;
+                    if (result != RETURN_OK) {
+                        LONG errorCode = IoErr();
+                        if (errorCode != 0) {
+                            PrintFault(errorCode, "Open");
+                        } else {
+                            Printf("Open: Failed to open root directory\n");
+                        }
+                    }
+                }
+            }
+        }
+        
+        /* Cleanup */
+        if (rda) {
+            FreeArgs(rda);
+        }
+        
+        Cleanup();
+        
+        return result;
     }
-    
-    /* Extract arguments */
-    fileName = (STRPTR)args[0];
-    forceTool = (STRPTR)args[1];
-    forceBrowse = (BOOL)(args[2] != 0);
-    forceEdit = (BOOL)(args[3] != 0);
-    forceInfo = (BOOL)(args[4] != 0);
-    
-    /* Initialize libraries */
-    if (!InitializeLibraries()) {
-        LONG errorCode = IoErr();
-        PrintFault(errorCode ? errorCode : ERROR_OBJECT_NOT_FOUND, "Open");
-        FreeArgs(rda);
-        return RETURN_FAIL;
-    }
-    
-    /* Open the item */
-    if (fileName) {
-        result = OpenItem(fileName, forceTool, forceBrowse, forceEdit, forceInfo);
-    } else {
-        ShowUsage();
-        result = RETURN_FAIL;
-    }
-    
-    /* Cleanup */
-    if (rda) {
-        FreeArgs(rda);
-    }
-    
-    Cleanup();
-    
-    return result;
 }
 
 /* Initialize required libraries */
@@ -242,7 +388,7 @@ VOID Cleanup(VOID)
 /* Show usage information */
 VOID ShowUsage(VOID)
 {
-    Printf("Usage: Open FILE=<filename> [TOOL=<toolname>] [BROWSE] [EDIT] [INFO]\n");
+    Printf("Usage: Open FILE=<filename> [TOOL=<toolname>] [BROWSE] [EDIT] [INFO] [PRINT] [MAIL]\n");
     Printf("\n");
     Printf("Options:\n");
     Printf("  FILE=<filename>  - File, drawer, or executable to open (required)\n");
@@ -250,6 +396,9 @@ VOID ShowUsage(VOID)
     Printf("  BROWSE           - Force BROWSE tool for data files\n");
     Printf("  EDIT             - Force EDIT tool for data files\n");
     Printf("  INFO             - Force INFO tool for data files\n");
+    Printf("  PRINT            - Force PRINT tool for data files\n");
+    Printf("  MAIL             - Force MAIL tool for data files\n");
+    Printf("  SHOWALL          - Show all files when opening drawers\n");
     Printf("\n");
     Printf("Open intelligently opens files, drawers, and executables:\n");
     Printf("  - Drawers are opened in Workbench\n");
@@ -265,7 +414,7 @@ VOID ShowUsage(VOID)
 }
 
 /* Main open function - determines type and opens appropriately */
-LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo)
+LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo, BOOL forcePrint, BOOL forceMail, BOOL showAll)
 {
     BPTR fileLock = NULL;
     LONG result = RETURN_FAIL;
@@ -284,15 +433,15 @@ LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdi
     if (IsInfoFile(fileName)) {
         /* It's a .info file - show icon information requester */
         /* Only do this for default open (not if forcing a tool) */
-        if (!forceTool && !forceBrowse && !forceEdit && !forceInfo) {
+        if (!forceTool && !forceBrowse && !forceEdit && !forceInfo && !forcePrint && !forceMail) {
             result = OpenInfoFile(fileName, fileLock) ? RETURN_OK : RETURN_FAIL;
         } else {
             /* User wants to open with a tool - treat as data file */
-            result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo) ? RETURN_OK : RETURN_FAIL;
+            result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail) ? RETURN_OK : RETURN_FAIL;
         }
     } else if (IsDrawer(fileName, fileLock)) {
         /* It's a drawer - open it */
-        result = OpenDrawer(fileName) ? RETURN_OK : RETURN_FAIL;
+        result = OpenDrawer(fileName, showAll) ? RETURN_OK : RETURN_FAIL;
     } else if (IsExecutable(fileName, fileLock)) {
         /* It's an executable - check if it's a binary asset */
         if (IsBinaryAsset(fileName)) {
@@ -304,7 +453,7 @@ LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdi
         }
     } else {
         /* It's a data file - open with appropriate tool */
-        result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo) ? RETURN_OK : RETURN_FAIL;
+        result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail) ? RETURN_OK : RETURN_FAIL;
     }
     
     /* Cleanup */
@@ -440,9 +589,10 @@ BOOL IsInfoFile(STRPTR fileName)
 }
 
 /* Open a drawer in Workbench */
-BOOL OpenDrawer(STRPTR drawerPath)
+BOOL OpenDrawer(STRPTR drawerPath, BOOL showAll)
 {
-    struct TagItem tags[1];
+    struct TagItem tags[3];
+    LONG tagIndex = 0;
     BOOL success = FALSE;
     LONG errorCode = 0;
     
@@ -450,7 +600,14 @@ BOOL OpenDrawer(STRPTR drawerPath)
         return FALSE;
     }
     
-    tags[0].ti_Tag = TAG_DONE;
+    /* Add SHOWALL tag if requested */
+    if (showAll) {
+        tags[tagIndex].ti_Tag = WBOPENA_Show;
+        tags[tagIndex].ti_Data = DDFLAGS_SHOWALL;
+        tagIndex++;
+    }
+    
+    tags[tagIndex].ti_Tag = TAG_DONE;
     
     /* Clear any previous error */
     SetIoErr(0);
@@ -611,7 +768,7 @@ BOOL OpenInfoFile(STRPTR fileName, BPTR fileLock)
 }
 
 /* Open a data file with appropriate tool */
-BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo)
+BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo, BOOL forcePrint, BOOL forceMail)
 {
     STRPTR tool = NULL;
     STRPTR defIconsType = NULL;
@@ -638,6 +795,10 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
             preferredTool = TW_EDIT;
         } else if (forceInfo) {
             preferredTool = TW_INFO;
+        } else if (forcePrint) {
+            preferredTool = TW_PRINT;
+        } else if (forceMail) {
+            preferredTool = TW_MAIL;
         }
         
         /* Try DefIcons method first (if DefIcons is running) */
@@ -917,10 +1078,23 @@ STRPTR GetDatatypesTool(STRPTR fileName, BPTR fileLock, UWORD preferredTool)
         toolOrder[0] = TW_EDIT;
         toolOrder[1] = TW_BROWSE;
         toolOrder[2] = TW_INFO;
-    } else {
+    } else if (preferredTool == TW_INFO) {
         toolOrder[0] = TW_INFO;
         toolOrder[1] = TW_BROWSE;
         toolOrder[2] = TW_EDIT;
+    } else if (preferredTool == TW_PRINT) {
+        toolOrder[0] = TW_PRINT;
+        toolOrder[1] = TW_BROWSE;
+        toolOrder[2] = TW_EDIT;
+    } else if (preferredTool == TW_MAIL) {
+        toolOrder[0] = TW_MAIL;
+        toolOrder[1] = TW_BROWSE;
+        toolOrder[2] = TW_EDIT;
+    } else {
+        /* Default fallback */
+        toolOrder[0] = TW_BROWSE;
+        toolOrder[1] = TW_EDIT;
+        toolOrder[2] = TW_INFO;
     }
     
     /* Try to find a tool in preferred order */
@@ -994,10 +1168,23 @@ struct ToolNode *GetDatatypesToolNode(STRPTR fileName, BPTR fileLock, UWORD pref
         toolOrder[0] = TW_EDIT;
         toolOrder[1] = TW_BROWSE;
         toolOrder[2] = TW_INFO;
-    } else {
+    } else if (preferredTool == TW_INFO) {
         toolOrder[0] = TW_INFO;
         toolOrder[1] = TW_BROWSE;
         toolOrder[2] = TW_EDIT;
+    } else if (preferredTool == TW_PRINT) {
+        toolOrder[0] = TW_PRINT;
+        toolOrder[1] = TW_BROWSE;
+        toolOrder[2] = TW_EDIT;
+    } else if (preferredTool == TW_MAIL) {
+        toolOrder[0] = TW_MAIL;
+        toolOrder[1] = TW_BROWSE;
+        toolOrder[2] = TW_EDIT;
+    } else {
+        /* Default fallback */
+        toolOrder[0] = TW_BROWSE;
+        toolOrder[1] = TW_EDIT;
+        toolOrder[2] = TW_INFO;
     }
     
     /* Try to find a tool in preferred order */
