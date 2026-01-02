@@ -1,0 +1,216 @@
+  Short:        Smart open any file using DefIcons and DataTypes 
+  Uploader:     toolkit@amigazen.com
+  Author:       amigazen project
+  Type:         util/cli
+  Version:      47.1
+  Architecture: m68k-amigaos >= 3.2
+  Distribution: Aminet
+  Kurz:         Dateien, Schubladen und Programme intelligent oeffnen
+
+  Open is a command line tool that intelligently determines how to open files, 
+  drawers, and executables on Amiga. It uses only system services (DefIcons, 
+  datatypes.library, Workbench) to determine what to do with the target
+
+  Features:
+  - Drawer Opening: Opens drawers in Workbench using OpenWorkbenchObjectA()
+  - Executable Launching: Launches executables (skips binary assets like
+    .library, .device, .resource, .font, .hunk, .o)
+  - Intelligent Data File Opening: Automatically selects the best tool using
+    DefIcons identification, datatypes.library tool selection, or icon default
+    tool
+  - Text File Support: Automatically detects text files and uses DefIcons
+    def_ascii tooltype - falls back to $Editor if no other 
+  - Multiple File Support: Process multiple files in a single command
+  - Workbench Mode: Supports being launched from Workbench with WBStartup
+    message
+  - System-Only: Uses only DefIcons, datatypes.library, and Workbench APIs
+  - No Dependencies: No fileid.library, whatis.library, or other third-party
+    libraries required
+
+  Requirements:
+  - AmigaOS 3.2 or higher (workbench.library v44+, datatypes.library v45+)
+  - icon.library v47+ (optional, for DefIcons integration)
+  - DefIcons (optional, for enhanced type identification)
+
+  Usage:
+
+  Basic Command Line Format:
+  Open FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S
+
+  File Specifications:
+  Open accepts one or more files, drawers, or executables:
+    Open RAM:
+    Open SYS:C/Edit
+    Open test.txt
+    Open file1.txt file2.txt file3.txt
+    Open MyProject/Sources/Open.c
+
+  If no FILE argument is provided, Open will open the current directory's 
+  Workbench drawer.
+
+  Command Options:
+
+  FILE/M (Multiple):
+  One or more files, drawers, or executables to open. Required unless opening
+  current directory.
+
+  TOOL/K (Keyword):
+  Force a specific tool to use for opening data files. This bypasses automatic
+  tool selection:
+    Open test.txt TOOL=MultiView
+
+  VIEW=BROWSE/S (Switch):
+  Force the BROWSE tool for data files. This is the default action for viewing
+  files. 
+
+  EDIT/S (Switch):
+  Force the EDIT tool for data files. Opens files in an editor for modification.
+  If no EDIT tool is found via datatypes.library, Open will attempt to use
+  DefIcons def_ascii tooltype or the $Editor environment variable for text
+  files.
+
+  INFO/S (Switch):
+  Force the INFO tool for data files. Displays information about the file using
+  the datatypes.library INFO tool.
+
+  PRINT/S (Switch):
+  Force the PRINT tool for data files. Sends files to a printer using the
+  datatypes.library PRINT tool.
+
+  MAIL/S (Switch):
+  Force the MAIL tool for data files. Opens files in a mail client using the
+  datatypes.library MAIL tool.
+
+  SHOWALL/S (Switch):
+  When opening drawers, show all files (including those without icons) instead
+  of only showing files with icons. This passes the DDFLAGS_SHOWALL flag to
+  OpenWorkbenchObjectA().
+
+  How Open Works:
+
+  Drawers:
+  Opens drawers directly in Workbench using OpenWorkbenchObjectA(). If SHOWALL
+  is specified, all files are displayed regardless of icon status.
+
+  Executables:
+  Launches executables using OpenWorkbenchObjectA(). Binary assets (.library,
+  .device, .resource, .font, .hunk, .o) are automatically skipped and not
+  executed.
+
+  Icon Files (.info):
+  For .info files (icon files), Open calls WBInfo() to show the Workbench icon
+  information requester. This only happens for default opens (not when forcing
+  a specific tool or verb). Note that currently WBInfo() is, uniquely, called 
+  synchronously.
+
+  Data Files:
+  Intelligently selects the best tool using this priority order:
+
+  1. DefIcons Method (if DefIcons is running):
+     - Uses GetIconTagList() with ICONGETA_IdentifyOnly to get type identifier
+     - Looks up default tool from ENV:Sys/def_XXX or ENVARC:Sys/def_XXX
+     - Launches tool with OpenWorkbenchObjectA() passing file as argument
+
+  2. Datatypes.library Method (fallback):
+     - Uses ObtainDataTypeA() to get datatype
+     - Searches for tool based on verb (BROWSE, EDIT, INFO, PRINT, MAIL)
+     - Uses FindToolNodeA() to locate the tool
+     - Launches tool with LaunchToolA() passing file as project
+
+  3. Icon Default Tool (if file has .info icon):
+     - Reads icon's default tool from the .info file
+     - Launches with OpenWorkbenchObjectA()
+
+  4. Text File Fallbacks (for text files only):
+     - If DefIcons is running, tries def_ascii tooltype
+     - If $Editor environment variable is set, uses that editor
+     - Launches editor using System() API in async mode
+
+  Text File Detection:
+  Open automatically detects text files using datatypes.library. A file is
+  considered text if:
+  - Its datatype group ID is GID_TEXT, or
+  - It is an empty file (0 bytes) and not a drawer
+
+  Examples:
+
+  Open a drawer:
+    Open RAM:
+    Opens the RAM: drawer in Workbench.
+
+  Open current directory:
+    Open
+    Opens the current directory in Workbench.
+
+  Open current directory showing all files:
+    Open SHOWALL
+    Opens the current directory showing all files, including those without icons.
+
+  Open a text file:
+    Open test.txt
+    Automatically opens with the best available tool (DefIcons default, datatypes
+    tool, or editor from $Editor).
+
+  Open multiple files:
+    Open file1.txt file2.txt file3.txt
+    Opens all three files, each with its appropriate tool.
+
+  Open with specific tool:
+    Open document.txt TOOL=Ed
+    Forces Ed to open the txt file instead of the default
+
+  Open for editing:
+    Open source.c EDIT
+    Opens the file with the EDIT tool. For text files, falls back to DefIcons
+    def_ascii or $Editor if no EDIT tool is registered.
+
+  Open for printing:
+    Open document.txt PRINT
+    Opens the file with the PRINT tool for printing.
+
+  Open icon information:
+    Open MyFile.info
+    Shows the Workbench icon information requester for MyFile.
+
+  Workbench Mode:
+  Open can be set as the default tool on a project icon. When launched from
+  Workbench, it receives a WBStartup message and processes all files passed to
+  it. This allows you to:
+  - Set Open as the default tool on a project icon
+  - Double-click the icon to open all associated files
+  - Each file is opened with its appropriate tool
+
+  For more information, and to report issues, visit:
+  - GitHub: https://github.com/amigazen/Open/
+  - Web: http://www.amigazen.com/toolkit/
+
+  This software is Free and Open Source Software distributed on BSD-2 license
+  terms:
+
+  Copyright (c) 2025 amigazen project
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  amigazen project philosophy is based on openness:
+  Open to anyone and everyone - Open source and free for all - Open your mind and create!

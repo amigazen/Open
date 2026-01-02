@@ -1011,7 +1011,6 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
         }
     } else {
         Printf("Open: No tool found to open: %s\n", fileName);
-        Printf("Open: Try installing DefIcons or configuring datatypes for this file type.\n");
         success = FALSE;
     }
     
