@@ -8,6 +8,7 @@
 #include <exec/types.h>
 #include <exec/execbase.h>
 #include <dos/dos.h>
+#include <dos/dostags.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
 #include <workbench/icon.h>
@@ -46,6 +47,11 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 #define TOOLA_LaunchType (TOOLA_Dummy + 3)
 #endif
 
+/* Datatype group IDs */
+#ifndef GID_TEXT
+#define GID_TEXT         MAKE_ID('t','e','x','t')
+#endif
+
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
@@ -82,8 +88,11 @@ STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier);
 STRPTR GetDatatypesTool(STRPTR fileName, BPTR fileLock, UWORD preferredTool);
 struct ToolNode *GetDatatypesToolNode(STRPTR fileName, BPTR fileLock, UWORD preferredTool, struct DataType **dtnOut);
 STRPTR GetIconDefaultTool(STRPTR fileName, BPTR fileLock);
+BOOL IsTextFile(STRPTR fileName, BPTR fileLock);
+STRPTR GetEditorFromEnv(VOID);
+BOOL LaunchEditorWithSystem(STRPTR editorPath, STRPTR fileName);
 
-static const char *verstag = "$VER: Open 47.1 (31.12.2025)\n";
+static const char *verstag = "$VER: Open 47.1 (2/2/2025)\n";
 static const char *stack_cookie = "$STACK: 4096\n";
 
 /* Binary asset extensions to skip */
@@ -776,7 +785,6 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
     STRPTR datatypesTool = NULL;
     STRPTR iconTool = NULL;
     BPTR parentLock = NULL;
-    STRPTR filePart = NULL;
     BOOL success = FALSE;
     UWORD preferredTool = TW_BROWSE; /* Default to BROWSE for viewing */
     
@@ -803,10 +811,27 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
         
         /* Try DefIcons method first (if DefIcons is running) */
         if (IconBase && IsDefIconsRunning()) {
-            filePart = FilePart(fileName);
+            STRPTR filePartPtr;
+            UBYTE fileNameCopy[256];
+            STRPTR fileNamePart = NULL;
+            
+            /* Get just the filename part */
+            filePartPtr = FilePart(fileName);
+            
+            /* Make a copy of the filename part to ensure it's valid */
+            /* FilePart returns a pointer into the original string, which may become invalid */
+            if (filePartPtr != NULL && *filePartPtr != '\0') {
+                /* Use full buffer size - Strncpy will handle truncation and null-termination */
+                Strncpy(fileNameCopy, filePartPtr, sizeof(fileNameCopy));
+                fileNamePart = fileNameCopy;
+            } else {
+                /* Fallback: use the original fileName if FilePart fails */
+                fileNamePart = fileName;
+            }
+            
             parentLock = ParentDir(fileLock);
             if (parentLock) {
-                defIconsType = GetDefIconsTypeIdentifier(filePart, parentLock);
+                defIconsType = GetDefIconsTypeIdentifier(fileNamePart, parentLock);
                 if (defIconsType && *defIconsType) {
                     defIconsTool = GetDefIconsDefaultTool(defIconsType);
                     if (defIconsTool && *defIconsTool) {
@@ -833,6 +858,31 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
                 tool = iconTool;
             }
         }
+        
+        /* If still no tool and file is text, try DefIcons def_ascii tooltype */
+        if (!tool && IsTextFile(fileName, fileLock) && IconBase && IsDefIconsRunning()) {
+            STRPTR defAsciiTool;
+            
+            defAsciiTool = GetDefIconsDefaultTool((STRPTR)"ascii");
+            if (defAsciiTool && *defAsciiTool) {
+                tool = defAsciiTool;
+            }
+        }
+        
+        /* If still no tool and file is text, try $Editor env var */
+        if (!tool && IsTextFile(fileName, fileLock)) {
+            STRPTR editorPath;
+            
+            editorPath = GetEditorFromEnv();
+            if (editorPath) {
+                success = LaunchEditorWithSystem(editorPath, fileName);
+                if (success) {
+                    FreeVec(editorPath);
+                    return TRUE;
+                }
+                FreeVec(editorPath);
+            }
+        }
     }
     
     /* Launch the tool */
@@ -841,18 +891,33 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
         if (tool == defIconsTool || tool == iconTool) {
             struct TagItem tags[3];
             BPTR toolFileLock = NULL;
-            STRPTR toolFilePart = NULL;
+            STRPTR toolFilePartPtr = NULL;
+            UBYTE toolFileNameCopy[256];
+            STRPTR toolFileNamePart = NULL;
             
             /* Build tags for OpenWorkbenchObjectA */
             toolFileLock = Lock(fileName, ACCESS_READ);
             if (toolFileLock) {
-                toolFilePart = FilePart(fileName);
+                /* Get just the filename part */
+                toolFilePartPtr = FilePart(fileName);
+                
+                /* Make a copy of the filename part to ensure it's valid */
+                /* FilePart returns a pointer into the original string, which may become invalid */
+                if (toolFilePartPtr != NULL && *toolFilePartPtr != '\0') {
+                    /* Use full buffer size - Strncpy will handle truncation and null-termination */
+                    Strncpy(toolFileNameCopy, toolFilePartPtr, sizeof(toolFileNameCopy));
+                    toolFileNamePart = toolFileNameCopy;
+                } else {
+                    /* Fallback: use the original fileName if FilePart fails */
+                    toolFileNamePart = fileName;
+                }
+                
                 parentLock = ParentDir(toolFileLock);
                 if (parentLock) {
                     tags[0].ti_Tag = WBOPENA_ArgLock;
                     tags[0].ti_Data = (ULONG)parentLock;
                     tags[1].ti_Tag = WBOPENA_ArgName;
-                    tags[1].ti_Data = (ULONG)toolFilePart;
+                    tags[1].ti_Data = (ULONG)toolFileNamePart;
                     tags[2].ti_Tag = TAG_DONE;
                     
                     SetIoErr(0);
@@ -892,17 +957,32 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
                 /* Fallback to OpenWorkbenchObjectA if we can't get ToolNode */
                 struct TagItem tags[3];
                 BPTR toolFileLock = NULL;
-                STRPTR toolFilePart = NULL;
+                STRPTR toolFilePartPtr = NULL;
+                UBYTE toolFileNameCopy[256];
+                STRPTR toolFileNamePart = NULL;
                 
                 toolFileLock = Lock(fileName, ACCESS_READ);
                 if (toolFileLock) {
-                    toolFilePart = FilePart(fileName);
+                    /* Get just the filename part */
+                    toolFilePartPtr = FilePart(fileName);
+                    
+                    /* Make a copy of the filename part to ensure it's valid */
+                    /* FilePart returns a pointer into the original string, which may become invalid */
+                    if (toolFilePartPtr != NULL && *toolFilePartPtr != '\0') {
+                        /* Use full buffer size - Strncpy will handle truncation and null-termination */
+                        Strncpy(toolFileNameCopy, toolFilePartPtr, sizeof(toolFileNameCopy));
+                        toolFileNamePart = toolFileNameCopy;
+                    } else {
+                        /* Fallback: use the original fileName if FilePart fails */
+                        toolFileNamePart = fileName;
+                    }
+                    
                     parentLock = ParentDir(toolFileLock);
                     if (parentLock) {
                         tags[0].ti_Tag = WBOPENA_ArgLock;
                         tags[0].ti_Data = (ULONG)parentLock;
                         tags[1].ti_Tag = WBOPENA_ArgName;
-                        tags[1].ti_Data = (ULONG)toolFilePart;
+                        tags[1].ti_Data = (ULONG)toolFileNamePart;
                         tags[2].ti_Tag = TAG_DONE;
                         
                         SetIoErr(0);
@@ -1228,19 +1308,34 @@ STRPTR GetIconDefaultTool(STRPTR fileName, BPTR fileLock)
     struct DiskObject *icon = NULL;
     STRPTR defaultTool = NULL;
     BPTR parentLock = NULL;
-    STRPTR filePart = NULL;
+    STRPTR filePartPtr = NULL;
+    UBYTE fileNameCopy[256];
+    STRPTR fileNamePart = NULL;
     BPTR oldDir = NULL;
     
     if (!IconBase || !fileName || !fileLock) {
         return NULL;
     }
     
-    filePart = FilePart(fileName);
+    /* Get just the filename part */
+    filePartPtr = FilePart(fileName);
+    
+    /* Make a copy of the filename part to ensure it's valid */
+    /* FilePart returns a pointer into the original string, which may become invalid */
+    if (filePartPtr != NULL && *filePartPtr != '\0') {
+        /* Use full buffer size - Strncpy will handle truncation and null-termination */
+        Strncpy(fileNameCopy, filePartPtr, sizeof(fileNameCopy));
+        fileNamePart = fileNameCopy;
+    } else {
+        /* Fallback: use the original fileName if FilePart fails */
+        fileNamePart = fileName;
+    }
+    
     parentLock = ParentDir(fileLock);
     
     if (parentLock) {
         oldDir = CurrentDir(parentLock);
-        icon = GetDiskObject(filePart);
+        icon = GetDiskObject(fileNamePart);
         CurrentDir(oldDir);
         
         if (icon) {
@@ -1258,5 +1353,117 @@ STRPTR GetIconDefaultTool(STRPTR fileName, BPTR fileLock)
     }
     
     return defaultTool;
+}
+
+/* Check if file is a text file using datatypes.library */
+BOOL IsTextFile(STRPTR fileName, BPTR fileLock)
+{
+    struct DataType *dtn = NULL;
+    struct FileInfoBlock *fib = NULL;
+    BOOL isText = FALSE;
+    
+    if (!fileName || !fileLock) {
+        return FALSE;
+    }
+    
+    /* First check if file is empty (0 bytes) and not a drawer - treat as text */
+    fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+    if (fib) {
+        if (Examine(fileLock, fib)) {
+            /* If file is 0 bytes and not a drawer, treat it as text */
+            if (fib->fib_DirEntryType == ST_FILE && fib->fib_Size == 0) {
+                FreeVec(fib);
+                return TRUE;
+            }
+        }
+        FreeVec(fib);
+    }
+    
+    /* If datatypes.library is available, check using it */
+    if (DataTypesBase) {
+        /* Try to obtain datatype for the file */
+        dtn = ObtainDataTypeA(DTST_FILE, (APTR)fileLock, NULL, NULL, 0, NULL);
+        if (dtn) {
+            /* Check if group ID is GID_TEXT */
+            if (dtn->dtn_Header->dth_GroupID == GID_TEXT) {
+                isText = TRUE;
+            }
+            ReleaseDataType(dtn);
+        }
+    }
+    
+    return isText;
+}
+
+/* Get editor path from $Editor environment variable */
+STRPTR GetEditorFromEnv(VOID)
+{
+    UBYTE editorBuffer[512];
+    LONG editorLen;
+    STRPTR editorPath = NULL;
+    BPTR editorLock = NULL;
+    
+    /* Get $Editor environment variable */
+    editorLen = GetVar((STRPTR)"Editor", editorBuffer, sizeof(editorBuffer), GVF_GLOBAL_ONLY);
+    if (editorLen > 0 && editorLen < (LONG)sizeof(editorBuffer)) {
+        /* Validate that the editor path points to a valid file */
+        editorLock = Lock((STRPTR)editorBuffer, ACCESS_READ);
+        if (editorLock) {
+            struct FileInfoBlock *fib;
+            
+            fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+            if (fib) {
+                if (Examine(editorLock, fib)) {
+                    /* Check if it's a file (not a directory) */
+                    if (fib->fib_DirEntryType == ST_FILE) {
+                        ULONG pathLen;
+                        
+                        /* Allocate memory for the editor path */
+                        pathLen = strlen((STRPTR)editorBuffer) + 1;
+                        editorPath = (STRPTR)AllocVec(pathLen, MEMF_CLEAR);
+                        if (editorPath) {
+                            Strncpy((UBYTE *)editorPath, editorBuffer, pathLen);
+                        }
+                    }
+                }
+                FreeVec(fib);
+            }
+            UnLock(editorLock);
+        }
+    }
+    
+    return editorPath;
+}
+
+/* Launch editor using System() API in async mode */
+BOOL LaunchEditorWithSystem(STRPTR editorPath, STRPTR fileName)
+{
+    UBYTE command[1024];
+    struct TagItem sysTags[2];
+    LONG sysResult;
+    LONG errorCode;
+    
+    if (!editorPath || !fileName) {
+        return FALSE;
+    }
+    
+    /* Build command: editor path followed by file name */
+    SNPrintf(command, sizeof(command), "%s %s", editorPath, fileName);
+    
+    /* Set up System() tags for async execution */
+    sysTags[0].ti_Tag = SYS_Asynch;
+    sysTags[0].ti_Data = (ULONG)TRUE;
+    sysTags[1].ti_Tag = TAG_DONE;
+    
+    SetIoErr(0);
+    sysResult = System(command, sysTags);
+    errorCode = IoErr();
+    
+    /* System() returns 0 for success or -1 for failure in async mode */
+    if (sysResult == -1 || errorCode != 0) {
+        return FALSE;
+    }
+    
+    return TRUE;
 }
 

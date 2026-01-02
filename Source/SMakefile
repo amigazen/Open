@@ -37,9 +37,10 @@ clean:
 
 # Install target
 install:
-	@echo "Installing Open to SDK/C..."
+	@echo "Installing Open to /SDK/C..."
 	@copy $(PROGRAM) to /SDK/C/$(PROGRAM) CLONE
 
 # Dependencies
 open.o: open.c
+
 
