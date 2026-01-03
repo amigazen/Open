@@ -11,6 +11,9 @@
 #include <dos/dostags.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
+#include <intuition/classusr.h>
+#include <classes/requester.h>
+#include <reaction/reaction_macros.h>
 #include <workbench/icon.h>
 #include <workbench/workbench.h>
 #include <workbench/startup.h>
@@ -51,6 +54,12 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 #ifndef GID_TEXT
 #define GID_TEXT         MAKE_ID('t','e','x','t')
 #endif
+#ifndef GID_BINARY
+#define GID_BINARY        MAKE_ID('b','i','n','a')
+#endif
+
+/* HUNK format magic IDs */
+#define HUNK_HEADER       0x000003F3  /* Executable files (HUNK_HEADER) */
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -59,6 +68,7 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 #include <proto/wb.h>
 #include <proto/datatypes.h>
 #include <proto/utility.h>
+#include <proto/requester.h>
 
 /* Library base pointers */
 extern struct ExecBase *SysBase;
@@ -69,10 +79,21 @@ extern struct Library *WorkbenchBase;
 extern struct Library *DataTypesBase;
 extern struct Library *UtilityBase;
 
+/* Reaction class library bases */
+struct ClassLibrary *RequesterBase = NULL;
+
+/* Reaction class handles */
+Class *RequesterClass = NULL;
+
+/* Global flag to track if running from Workbench */
+static BOOL g_fromWorkbench = FALSE;
+
 /* Forward declarations */
 BOOL InitializeLibraries(VOID);
+BOOL InitializeApplication(VOID);
 VOID Cleanup(VOID);
 VOID ShowUsage(VOID);
+VOID ShowErrorDialog(STRPTR title, STRPTR message);
 LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdit, BOOL forceInfo, BOOL forcePrint, BOOL forceMail, BOOL showAll);
 BOOL IsDrawer(STRPTR fileName, BPTR fileLock);
 BOOL IsExecutable(STRPTR fileName, BPTR fileLock);
@@ -91,18 +112,21 @@ STRPTR GetIconDefaultTool(STRPTR fileName, BPTR fileLock);
 BOOL IsTextFile(STRPTR fileName, BPTR fileLock);
 STRPTR GetEditorFromEnv(VOID);
 BOOL LaunchEditorWithSystem(STRPTR editorPath, STRPTR fileName);
+STRPTR GetViewerFromEnv(VOID);
+BOOL LaunchViewerWithSystem(STRPTR viewerPath, STRPTR fileName);
 
-static const char *verstag = "$VER: Open 47.1 (2/2/2025)\n";
+static const char *verstag = "$VER: Open 47.1 (3/1/2026)\n";
 static const char *stack_cookie = "$STACK: 4096\n";
+const long oslibversion = 47L;
 
 /* Binary asset extensions to skip */
 static const char *binaryAssets[] = {
     ".library",
     ".device",
-    ".resource",
-    ".font",
-    ".hunk",
-    ".o",
+    ".datatype",
+    ".gadget",
+    ".image",
+    ".class",
     NULL
 };
 
@@ -118,6 +142,7 @@ int main(int argc, char *argv[])
     
     /* Check if running from Workbench */
     fromWorkbench = (argc == 0);
+    g_fromWorkbench = fromWorkbench;
     
     if (fromWorkbench) {
         /* Workbench mode - get WBStartup message */
@@ -126,15 +151,21 @@ int main(int argc, char *argv[])
         /* Initialize libraries */
         if (!InitializeLibraries()) {
             LONG errorCode = IoErr();
-            PrintFault(errorCode ? errorCode : ERROR_OBJECT_NOT_FOUND, "Open");
+            ShowErrorDialog("Open Error", "Failed to initialize libraries.");
+            return RETURN_FAIL;
+        }
+        
+        /* Initialize application (Reaction classes) */
+        if (!InitializeApplication()) {
+            Cleanup();
+            ShowErrorDialog("Open Error", "Failed to initialize application.");
             return RETURN_FAIL;
         }
         
         /* Check if we have any file arguments */
         if (wbs->sm_NumArgs <= 1) {
             /* No files to process - show error */
-            Printf("Open: No file specified.\n");
-            Printf("Open must be set as the default tool on a project icon.\n");
+            ShowErrorDialog("Open Error", "Nothing to open.");
             Cleanup();
             return RETURN_FAIL;
         }
@@ -178,7 +209,7 @@ int main(int argc, char *argv[])
         BOOL showAll = FALSE;
         
         /* Command template - matches DataType command */
-        static const char *template = "FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S";
+        static const char *template = "DRAWER=FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S";
         LONG args[8];
         
         /* Initialize args array */
@@ -365,9 +396,41 @@ BOOL InitializeLibraries(VOID)
     return TRUE;
 }
 
+/* Initialize Reaction classes */
+BOOL InitializeApplication(VOID)
+{
+    /* Open requester.class */
+    RequesterBase = (struct ClassLibrary *)OpenLibrary("requester.class", 47L);
+    if (RequesterBase == NULL) {
+        return FALSE;
+    }
+    
+    /* Get the requester class */
+    RequesterClass = REQUESTER_GetClass();
+    if (RequesterClass == NULL) {
+        CloseLibrary(RequesterBase);
+        RequesterBase = NULL;
+        return FALSE;
+    }
+    
+    return TRUE;
+}
+
 /* Cleanup libraries */
 VOID Cleanup(VOID)
 {
+    /* Close Reaction classes first */
+    if (RequesterClass != NULL) {
+        /* For Reaction classes, we don't call FreeClass - just clear the pointer */
+        /* The class will be cleaned up when the library is closed */
+        RequesterClass = NULL;
+    }
+    
+    if (RequesterBase != NULL) {
+        CloseLibrary(RequesterBase);
+        RequesterBase = NULL;
+    }
+    
     if (DataTypesBase) {
         CloseLibrary(DataTypesBase);
         DataTypesBase = NULL;
@@ -397,12 +460,12 @@ VOID Cleanup(VOID)
 /* Show usage information */
 VOID ShowUsage(VOID)
 {
-    Printf("Usage: Open FILE=<filename> [TOOL=<toolname>] [BROWSE] [EDIT] [INFO] [PRINT] [MAIL]\n");
+    Printf("Usage: Open FILE=<filename> [TOOL=<toolname>] [VIEW=BROWSE] [EDIT] [INFO] [PRINT] [MAIL]\n");
     Printf("\n");
     Printf("Options:\n");
     Printf("  FILE=<filename>  - File, drawer, or executable to open (required)\n");
     Printf("  TOOL=<toolname>  - Force specific tool to use\n");
-    Printf("  BROWSE           - Force BROWSE tool for data files\n");
+    Printf("  VIEW=BROWSE      - Force BROWSE tool for data files\n");
     Printf("  EDIT             - Force EDIT tool for data files\n");
     Printf("  INFO             - Force INFO tool for data files\n");
     Printf("  PRINT            - Force PRINT tool for data files\n");
@@ -420,6 +483,33 @@ VOID ShowUsage(VOID)
     Printf("  Open test.txt                - Open with default tool\n");
     Printf("  Open test.txt BROWSE         - Force BROWSE tool\n");
     Printf("  Open test.txt TOOL=MultiView - Force specific tool\n");
+}
+
+/* Show error dialog using Reaction requester */
+VOID ShowErrorDialog(STRPTR title, STRPTR message)
+{
+    Object *reqobj;
+    
+    if (!RequesterClass || !title || !message) {
+        return;
+    }
+    
+    /* Create the requester object */
+    reqobj = NewObject(RequesterClass, NULL,
+                       REQ_TitleText, title,
+                       REQ_BodyText, message,
+                       REQ_Type, REQTYPE_INFO,
+                       REQ_GadgetText, "OK",
+                       REQ_Image, REQIMAGE_ERROR,
+                       TAG_END);
+    
+    if (reqobj != NULL) {
+        /* Show the requester and wait for user response */
+        DoMethod(reqobj, RM_OPENREQ, NULL, 0L, NULL, TAG_DONE);
+        
+        /* Clean up the requester object */
+        DisposeObject(reqobj);
+    }
 }
 
 /* Main open function - determines type and opens appropriately */
@@ -440,13 +530,53 @@ LONG OpenItem(STRPTR fileName, STRPTR forceTool, BOOL forceBrowse, BOOL forceEdi
     /* Determine what type of item this is */
     /* Check for .info files first (before drawer check) */
     if (IsInfoFile(fileName)) {
-        /* It's a .info file - show icon information requester */
-        /* Only do this for default open (not if forcing a tool) */
-        if (!forceTool && !forceBrowse && !forceEdit && !forceInfo && !forcePrint && !forceMail) {
+        /* It's a .info file */
+        if (forceTool && *forceTool) {
+            /* Explicit tool specified - use it directly */
+            result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail) ? RETURN_OK : RETURN_FAIL;
+        } else if (!forceBrowse && !forceEdit && !forceInfo && !forcePrint && !forceMail) {
+            /* No tool verbs specified - show icon information requester */
             result = OpenInfoFile(fileName, fileLock) ? RETURN_OK : RETURN_FAIL;
         } else {
-            /* User wants to open with a tool - treat as data file */
-            result = OpenDataFile(fileName, fileLock, forceTool, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail) ? RETURN_OK : RETURN_FAIL;
+            /* Tool verbs specified (but no explicit tool) - check datatypes toolnodes first */
+            STRPTR datatypesTool = NULL;
+            UWORD preferredTool = TW_BROWSE;
+            BOOL toolFound = FALSE;
+            
+            /* Determine preferred tool type from flags */
+            if (forceBrowse) {
+                preferredTool = TW_BROWSE;
+            } else if (forceEdit) {
+                preferredTool = TW_EDIT;
+            } else if (forceInfo) {
+                preferredTool = TW_INFO;
+            } else if (forcePrint) {
+                preferredTool = TW_PRINT;
+            } else if (forceMail) {
+                preferredTool = TW_MAIL;
+            }
+            
+            /* Check datatypes toolnodes for a tool */
+            if (DataTypesBase) {
+                datatypesTool = GetDatatypesTool(fileName, fileLock, preferredTool);
+                if (datatypesTool && *datatypesTool) {
+                    toolFound = TRUE;
+                }
+            }
+            
+            if (toolFound) {
+                /* Tool found from datatypes - use it */
+                result = OpenDataFile(fileName, fileLock, NULL, forceBrowse, forceEdit, forceInfo, forcePrint, forceMail) ? RETURN_OK : RETURN_FAIL;
+                if (datatypesTool) {
+                    FreeVec(datatypesTool);
+                }
+            } else {
+                /* No tool found - fall back to WBInfo */
+                if (datatypesTool) {
+                    FreeVec(datatypesTool);
+                }
+                result = OpenInfoFile(fileName, fileLock) ? RETURN_OK : RETURN_FAIL;
+            }
         }
     } else if (IsDrawer(fileName, fileLock)) {
         /* It's a drawer - open it */
@@ -500,38 +630,107 @@ BOOL IsDrawer(STRPTR fileName, BPTR fileLock)
 /* Check if item is an executable */
 BOOL IsExecutable(STRPTR fileName, BPTR fileLock)
 {
-    struct FileInfoBlock *fib = NULL;
-    BOOL result = FALSE;
+    STRPTR defIconsType = NULL;
     STRPTR filePart = NULL;
+    STRPTR filePartPtr = NULL;
+    BOOL isToolType = FALSE;
+    BOOL isBinaryType = FALSE;
+    BOOL isHunkFormat = FALSE;
+    BPTR fileHandle = NULL;
+    LONG bytesRead = 0;
+    BPTR parentLock = NULL;
+    BPTR oldDir = NULL;
     
-    if (!fileLock) {
+    if (!fileName || !fileLock) {
         return FALSE;
     }
     
-    fib = (struct FileInfoBlock *)AllocMem(sizeof(struct FileInfoBlock), MEMF_CLEAR);
-    if (!fib) {
-        return FALSE;
-    }
-    
-    if (Examine(fileLock, fib)) {
-        /* Check if it's a file (not a drawer) */
-        if (fib->fib_DirEntryType == ST_FILE) {
-            /* Check if executable bit is set */
-            if (fib->fib_Protection & FIBF_EXECUTE) {
-                result = TRUE;
-            } else {
-                /* Check if it's in C: directory (CLI commands) */
-                filePart = FilePart(fileName);
-                if (filePart && strncmp(fileName, "C:", 2) == 0) {
-                    result = TRUE;
+    /* Check DefIcons type identifier for 'tool' */
+    if (IconBase && IsDefIconsRunning()) {
+        filePartPtr = FilePart(fileName);
+        if (filePartPtr != NULL && *filePartPtr != '\0') {
+            UBYTE fileNameCopy[256];
+            STRPTR fileNamePart = NULL;
+            
+            /* Make a copy of the filename part */
+            Strncpy(fileNameCopy, filePartPtr, sizeof(fileNameCopy));
+            fileNamePart = fileNameCopy;
+            
+            parentLock = ParentDir(fileLock);
+            if (parentLock) {
+                oldDir = CurrentDir(parentLock);
+                defIconsType = GetDefIconsTypeIdentifier(fileNamePart, parentLock);
+                CurrentDir(oldDir);
+                UnLock(parentLock);
+            }
+            
+            if (defIconsType && *defIconsType != '\0') {
+                /* Check if type identifier is 'tool' (case-insensitive) */
+                if (Stricmp(defIconsType, "tool") == 0) {
+                    isToolType = TRUE;
                 }
             }
         }
     }
     
-    FreeMem(fib, sizeof(struct FileInfoBlock));
+    /* Check datatypes for 'binary' group ID */
+    if (!isToolType && DataTypesBase) {
+        struct DataType *dtn = NULL;
+        
+        dtn = ObtainDataTypeA(DTST_FILE, (APTR)fileLock, NULL);
+        if (dtn) {
+            /* Check if group ID is GID_BINARY */
+            if (dtn->dtn_Header->dth_GroupID == GID_BINARY) {
+                isBinaryType = TRUE;
+            }
+            ReleaseDataType(dtn);
+        }
+    }
     
-    return result;
+    /* If neither tool nor binary type, not an executable */
+    if (!isToolType && !isBinaryType) {
+        return FALSE;
+    }
+    
+    /* Check if file is HUNK format by reading first 4 bytes */
+    fileHandle = Open((STRPTR)fileName, MODE_OLDFILE);
+    if (fileHandle) {
+        UBYTE hunkBytes[4];
+        
+        bytesRead = Read(fileHandle, hunkBytes, 4);
+        Close(fileHandle);
+        
+        if (bytesRead == 4) {
+            /* Check for HUNK_HEADER (00 00 03 F3) - executable files only */
+            /* Amiga is big-endian, so bytes are in order: [00, 00, 03, F3] */
+            /* Note: We only check for HUNK_HEADER, not HUNK_UNIT (object files) */
+            if (hunkBytes[0] == 0x00 && hunkBytes[1] == 0x00 && 
+                hunkBytes[2] == 0x03 && hunkBytes[3] == 0xF3) {
+                isHunkFormat = TRUE;
+            }
+        }
+    }
+    
+    /* If not HUNK format, not an executable */
+    if (!isHunkFormat) {
+        return FALSE;
+    }
+    
+    /* Check if filename has a period - if it does, it's probably a library/device (not runnable) */
+    filePart = FilePart(fileName);
+    if (filePart) {
+        STRPTR periodPtr;
+        
+        /* Look for period in filename (not including path) */
+        periodPtr = strchr(filePart, '.');
+        if (periodPtr != NULL) {
+            /* Has a period - it's probably a library/device, not a runnable binary */
+            return FALSE;
+        }
+    }
+    
+    /* It's a HUNK binary with no period in filename - it's executable */
+    return TRUE;
 }
 
 /* Check if file is a binary asset that shouldn't be executed */
@@ -667,113 +866,68 @@ BOOL OpenExecutable(STRPTR execPath)
     return TRUE;
 }
 
-/* Open a .info file using WBInfo() */
+/* Open a .info file using WBInfo command line tool via System() */
 BOOL OpenInfoFile(STRPTR fileName, BPTR fileLock)
 {
-    BPTR parentLock = NULL;
-    STRPTR filePart = NULL;
-    STRPTR iconName = NULL;
-    struct Screen *workbenchScreen = NULL;
-    ULONG result = FALSE;
+    UBYTE iconPath[512];
+    BOOL result = FALSE;
     LONG nameLen = 0;
-    LONG allocSize = 0;
+    UBYTE command[512];
+    struct TagItem sysTags[4];
+    LONG sysResult;
+    LONG errorCode;
     
-    if (!fileName || !fileLock || !WorkbenchBase || !IntuitionBase) {
+    if (!fileName || !fileLock || !DOSBase) {
         return FALSE;
     }
     
-    /* Get the parent directory lock and filename part */
-    filePart = FilePart(fileName);
-    if (!filePart) {
+    /* Copy the full filename path */
+    nameLen = strlen(fileName);
+    if (nameLen >= (LONG)sizeof(iconPath)) {
+        Printf("Open: Filename too long: %s\n", fileName);
         return FALSE;
     }
     
-    /* Remove .info extension from filename */
-    nameLen = strlen(filePart);
-    if (nameLen > 5 && Stricmp(filePart + nameLen - 5, ".info") == 0) {
-        /* Allocate buffer for icon name without .info extension */
-        /* nameLen - 4 gives us space for the name without ".info" + null terminator */
-        allocSize = nameLen - 4;
-        iconName = (STRPTR)AllocMem(allocSize, MEMF_CLEAR);
-        if (iconName) {
-            /* Copy filename without .info extension */
-            /* Copy nameLen - 5 characters (everything except last 5 chars which is ".info") */
-            Strncpy((UBYTE *)iconName, (UBYTE *)filePart, nameLen - 4);
-            /* Remove the '.' character by null-terminating at the correct position */
-            iconName[nameLen - 5] = '\0';
-        } else {
-            return FALSE;
-        }
-    } else {
-        /* Filename doesn't end with .info extension, use as-is */
-        iconName = filePart;
-        allocSize = 0; /* Not allocated */
+    Strncpy(iconPath, fileName, sizeof(iconPath));
+    
+    /* Remove .info extension from full path if present */
+    if (nameLen > 5 && Stricmp((STRPTR)iconPath + nameLen - 5, ".info") == 0) {
+        /* Null-terminate at the position before ".info" */
+        iconPath[nameLen - 5] = '\0';
     }
     
-    if (!iconName) {
-        return FALSE;
-    }
+    /* Build command: WBInfo <fully-qualified-path> */
+    SNPrintf(command, sizeof(command), "WBInfo %s", iconPath);
     
-    parentLock = ParentDir(fileLock);
-    if (!parentLock) {
-        /* For root volumes/devices, ParentDir may return NULL */
-        /* In this case, we can't use WBInfo properly */
-        if (iconName != filePart && allocSize > 0) {
-            FreeMem(iconName, allocSize);
-        }
-        Printf("Open: Cannot get parent directory for: %s\n", fileName);
-        return FALSE;
-    }
+    /* Set up System() tags for async execution */
+    /* Redirect output to NIL: to prevent any output from appearing in our console */
+    sysTags[0].ti_Tag = SYS_Asynch;
+    sysTags[0].ti_Data = (ULONG)TRUE;
+    sysTags[1].ti_Tag = SYS_Output;
+    sysTags[1].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for output */
+    sysTags[2].ti_Tag = SYS_Input;
+    sysTags[2].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for input */
+    sysTags[3].ti_Tag = TAG_DONE;
     
-    /* Get Workbench screen pointer */
-    workbenchScreen = LockPubScreen("Workbench");
-    if (!workbenchScreen) {
-        /* Fallback to default public screen if Workbench not available */
-        workbenchScreen = LockPubScreen(NULL);
-    }
-    
-    if (!workbenchScreen) {
-        UnLock(parentLock);
-        if (iconName != filePart && allocSize > 0) {
-            FreeMem(iconName, allocSize);
-        }
-        Printf("Open: Failed to get Workbench screen\n");
-        return FALSE;
-    }
-    
-    /* Call WBInfo() with Workbench screen and icon name without .info */
-    /* WBInfo expects: parent directory lock, icon name (without .info), screen */
     /* Clear any previous error */
     SetIoErr(0);
     
-    result = WBInfo(parentLock, iconName, workbenchScreen);
+    /* Launch WBInfo command asynchronously */
+    sysResult = System((STRPTR)command, sysTags);
+    errorCode = IoErr();
     
-    /* Check for errors */
-    if (!result) {
-        LONG wbError = IoErr();
-        Printf("Open: WBInfo failed for: %s\n", fileName);
-        Printf("Open: Icon name used: %s\n", iconName);
-        if (wbError != 0) {
-            PrintFault(wbError, "Open");
+    /* System() returns 0 for success or -1 for failure in async mode */
+    if (sysResult == -1 || errorCode != 0) {
+        Printf("Open: Failed to launch WBInfo for: %s\n", fileName);
+        if (errorCode != 0) {
+            PrintFault(errorCode, "Open");
         }
+        result = FALSE;
+    } else {
+        result = TRUE;
     }
     
-    /* Unlock the screen */
-    UnlockPubScreen(NULL, workbenchScreen);
-    
-    /* Unlock parent directory */
-    UnLock(parentLock);
-    
-    /* Free allocated icon name if we created it */
-    if (iconName != filePart && allocSize > 0) {
-        FreeMem(iconName, allocSize);
-    }
-    
-    if (!result) {
-        return FALSE;
-    }
-    
-    return TRUE;
+    return result;
 }
 
 /* Open a data file with appropriate tool */
@@ -790,6 +944,12 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
     
     if (!fileName || !fileLock) {
         return FALSE;
+    }
+    
+    /* If the target is itself an executable binary, open it directly with OpenWorkbenchObjectA */
+    if (IsExecutable(fileName, fileLock) && !IsBinaryAsset(fileName)) {
+        /* It's an executable binary - launch it directly */
+        return OpenExecutable(fileName);
     }
     
     /* If force tool specified, use it directly */
@@ -881,6 +1041,21 @@ BOOL OpenDataFile(STRPTR fileName, BPTR fileLock, STRPTR forceTool, BOOL forceBr
                     return TRUE;
                 }
                 FreeVec(editorPath);
+            }
+        }
+        
+        /* If still no tool and file is not text, try $Viewer env var */
+        if (!tool && !IsTextFile(fileName, fileLock)) {
+            STRPTR viewerPath;
+            
+            viewerPath = GetViewerFromEnv();
+            if (viewerPath) {
+                success = LaunchViewerWithSystem(viewerPath, fileName);
+                if (success) {
+                    FreeVec(viewerPath);
+                    return TRUE;
+                }
+                FreeVec(viewerPath);
             }
         }
     }
@@ -1438,7 +1613,7 @@ STRPTR GetEditorFromEnv(VOID)
 BOOL LaunchEditorWithSystem(STRPTR editorPath, STRPTR fileName)
 {
     UBYTE command[1024];
-    struct TagItem sysTags[2];
+    struct TagItem sysTags[4];
     LONG sysResult;
     LONG errorCode;
     
@@ -1450,9 +1625,91 @@ BOOL LaunchEditorWithSystem(STRPTR editorPath, STRPTR fileName)
     SNPrintf(command, sizeof(command), "%s %s", editorPath, fileName);
     
     /* Set up System() tags for async execution */
+    /* Redirect input/output to NIL: to prevent any output from appearing in our console */
     sysTags[0].ti_Tag = SYS_Asynch;
     sysTags[0].ti_Data = (ULONG)TRUE;
-    sysTags[1].ti_Tag = TAG_DONE;
+    sysTags[1].ti_Tag = SYS_Output;
+    sysTags[1].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for output */
+    sysTags[2].ti_Tag = SYS_Input;
+    sysTags[2].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for input */
+    sysTags[3].ti_Tag = TAG_DONE;
+    
+    SetIoErr(0);
+    sysResult = System(command, sysTags);
+    errorCode = IoErr();
+    
+    /* System() returns 0 for success or -1 for failure in async mode */
+    if (sysResult == -1 || errorCode != 0) {
+        return FALSE;
+    }
+    
+    return TRUE;
+}
+
+/* Get viewer path from $Viewer environment variable */
+STRPTR GetViewerFromEnv(VOID)
+{
+    UBYTE viewerBuffer[512];
+    LONG viewerLen;
+    STRPTR viewerPath = NULL;
+    BPTR viewerLock = NULL;
+    
+    /* Get $Viewer environment variable */
+    viewerLen = GetVar((STRPTR)"Viewer", viewerBuffer, sizeof(viewerBuffer), GVF_GLOBAL_ONLY);
+    if (viewerLen > 0 && viewerLen < (LONG)sizeof(viewerBuffer)) {
+        /* Validate that the viewer path points to a valid file */
+        viewerLock = Lock((STRPTR)viewerBuffer, ACCESS_READ);
+        if (viewerLock) {
+            struct FileInfoBlock *fib;
+            
+            fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+            if (fib) {
+                if (Examine(viewerLock, fib)) {
+                    /* Check if it's a file (not a directory) */
+                    if (fib->fib_DirEntryType == ST_FILE) {
+                        ULONG pathLen;
+                        
+                        /* Allocate memory for the viewer path */
+                        pathLen = strlen((STRPTR)viewerBuffer) + 1;
+                        viewerPath = (STRPTR)AllocVec(pathLen, MEMF_CLEAR);
+                        if (viewerPath) {
+                            Strncpy((UBYTE *)viewerPath, viewerBuffer, pathLen);
+                        }
+                    }
+                }
+                FreeVec(fib);
+            }
+            UnLock(viewerLock);
+        }
+    }
+    
+    return viewerPath;
+}
+
+/* Launch viewer using System() API in async mode */
+BOOL LaunchViewerWithSystem(STRPTR viewerPath, STRPTR fileName)
+{
+    UBYTE command[1024];
+    struct TagItem sysTags[4];
+    LONG sysResult;
+    LONG errorCode;
+    
+    if (!viewerPath || !fileName) {
+        return FALSE;
+    }
+    
+    /* Build command: viewer path followed by file name */
+    SNPrintf(command, sizeof(command), "%s %s", viewerPath, fileName);
+    
+    /* Set up System() tags for async execution */
+    /* Redirect input/output to NIL: to prevent any output from appearing in our console */
+    sysTags[0].ti_Tag = SYS_Asynch;
+    sysTags[0].ti_Data = (ULONG)TRUE;
+    sysTags[1].ti_Tag = SYS_Output;
+    sysTags[1].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for output */
+    sysTags[2].ti_Tag = SYS_Input;
+    sysTags[2].ti_Data = (ULONG)NULL;  /* NULL means use NIL: for input */
+    sysTags[3].ti_Tag = TAG_DONE;
     
     SetIoErr(0);
     sysResult = System(command, sysTags);

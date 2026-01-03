@@ -14,15 +14,15 @@
   Features:
   - Drawer Opening: Opens drawers in Workbench using OpenWorkbenchObjectA()
   - Executable Launching: Launches executables (skips binary assets like
-    .library, .device, .resource, .font, .hunk, .o)
+    .library, .device, .datatype, .class, .image)
   - Intelligent Data File Opening: Automatically selects the best tool using
     DefIcons identification, datatypes.library tool selection, or icon default
     tool
   - Text File Support: Automatically detects text files and uses DefIcons
-    def_ascii tooltype - falls back to $Editor if no other 
+    def_ascii tooltype - falls back to $Editor if no other tool is found
   - Multiple File Support: Process multiple files in a single command
   - Workbench Mode: Supports being launched from Workbench with WBStartup
-    message
+    message, shows error dialogs using requester.class
   - System-Only: Uses only DefIcons, datatypes.library, and Workbench APIs
   - No Dependencies: No fileid.library, whatis.library, or other third-party
     libraries required
@@ -31,14 +31,16 @@
   - AmigaOS 3.2 or higher (workbench.library v44+, datatypes.library v45+)
   - icon.library v47+ (optional, for DefIcons integration)
   - DefIcons (optional, for enhanced type identification)
+  - requester.class (optional, for Workbench error dialogs)
 
   Usage:
 
   Basic Command Line Format:
-  Open FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S
+  Open [FILE/M] [TOOL/K] [VIEW=BROWSE/S] [EDIT/S] [INFO/S] [PRINT/S] [MAIL/S] [SHOWALL/S]
 
   File Specifications:
-  Open accepts one or more files, drawers, or executables:
+  Open accepts zero or more files, drawers, or executables:
+    Open
     Open RAM:
     Open SYS:C/Edit
     Open test.txt
@@ -51,8 +53,9 @@
   Command Options:
 
   FILE/M (Multiple):
-  One or more files, drawers, or executables to open. Required unless opening
-  current directory.
+  Zero or more files, drawers, or executables to open. If not specified,
+  opens the current directory. Multiple files can be specified:
+    Open file1.txt file2.txt file3.txt
 
   TOOL/K (Keyword):
   Force a specific tool to use for opening data files. This bypasses automatic
@@ -71,7 +74,8 @@
 
   INFO/S (Switch):
   Force the INFO tool for data files. Displays information about the file using
-  the datatypes.library INFO tool.
+  the datatypes.library INFO tool. For .info files, if no INFO tool is found
+  via datatypes, falls back to WBInfo.
 
   PRINT/S (Switch):
   Force the PRINT tool for data files. Sends files to a printer using the
@@ -93,15 +97,21 @@
   is specified, all files are displayed regardless of icon status.
 
   Executables:
-  Launches executables using OpenWorkbenchObjectA(). Binary assets (.library,
-  .device, .resource, .font, .hunk, .o) are automatically skipped and not
-  executed.
+  Executables are detected by checking:
+  1. DefIcons type identifier 'tool', or datatypes group ID 'binary'
+  2. HUNK_HEADER format verification (magic ID 0x000003F3)
+  3. Filename without a period (libraries/devices have periods and are skipped)
+
+  Launches executables using OpenWorkbenchObjectA(). Binary assets
+  (.library, .device, .datatype, .class, .image) are automatically skipped
+  and not executed.
 
   Icon Files (.info):
-  For .info files (icon files), Open calls WBInfo() to show the Workbench icon
-  information requester. This only happens for default opens (not when forcing
-  a specific tool or verb). Note that currently WBInfo() is, uniquely, called 
-  synchronously.
+  For .info files (icon files), Open behavior depends on tool verbs:
+  - If tool verbs (EDIT, BROWSE, INFO, etc.) are specified: checks datatypes
+    toolnodes first, falls back to WBInfo if no tool found
+  - If no tool verbs specified: calls WBInfo() asynchronously via System()
+    to show the Workbench icon information requester
 
   Data Files:
   Intelligently selects the best tool using this priority order:
@@ -170,15 +180,22 @@
 
   Open icon information:
     Open MyFile.info
-    Shows the Workbench icon information requester for MyFile.
+    Shows the Workbench icon information requester for MyFile (via WBInfo).
+
+  Open icon with tool:
+    Open MyFile.info EDIT
+    If an EDIT tool is available via datatypes for .info files, use it.
+    Otherwise, falls back to WBInfo.
 
   Workbench Mode:
   Open can be set as the default tool on a project icon. When launched from
   Workbench, it receives a WBStartup message and processes all files passed to
-  it. This allows you to:
+  it. Error messages are displayed using requester.class dialogs instead of
+  console output. This allows you to:
   - Set Open as the default tool on a project icon
   - Double-click the icon to open all associated files
   - Each file is opened with its appropriate tool
+  - See user-friendly error dialogs if something goes wrong
 
   For more information, and to report issues, visit:
   - GitHub: https://github.com/amigazen/Open/

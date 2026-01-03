@@ -1,0 +1,137 @@
+   NAME
+	Open - Intelligently open files, drawers, and executables
+
+   FORMAT
+	Open [FILE=<filename>] [TOOL=<toolname>] [VIEW=BROWSE] [EDIT] [INFO] [PRINT] [MAIL] [SHOWALL]
+
+   TEMPLATE
+	DRAWER=FILE/M,TOOL/K,VIEW=BROWSE/S,EDIT/S,INFO/S,PRINT/S,MAIL/S,SHOWALL/S
+
+   PATH
+	SDK:C/Open
+
+   FUNCTION
+	Open intelligently determines how to open files, drawers, and executables
+	on AmigaOS using only system services (DefIcons, datatypes.library,
+	Workbench). It automatically selects the most appropriate tool for each
+	file type.
+
+	When no FILE argument is provided, Open opens the current directory's
+	Workbench drawer.
+
+	Open supports multiple files - you can specify multiple files and each
+	will be opened with its appropriate tool.
+
+	Open uses a priority-based system to select tools:
+	1. DefIcons identification (if DefIcons is running)
+	2. datatypes.library tool selection
+	3. Icon default tool (if file has .info icon)
+	4. Text file fallbacks (DefIcons def_ascii or $Editor env var)
+
+	For .info files, Open checks datatypes toolnodes first if tool verbs
+	(EDIT, BROWSE, etc.) are specified, otherwise shows the Workbench icon
+	information requester using WBInfo.
+
+	Executables are detected by checking DefIcons type 'tool' or datatypes
+	'binary' group, then verifying HUNK format (HUNK_HEADER). Executables
+	with periods in their filename are treated as libraries/devices and
+	skipped.
+
+   OPTIONS
+	FILE=<filename>
+	One or more files, drawers, or executables to open. If not specified,
+	Open opens the current directory. Multiple files can be specified:
+	    Open file1.txt file2.txt file3.txt
+
+	TOOL=<toolname>
+	Force a specific tool to use for opening data files. This bypasses
+	automatic tool selection:
+	    Open test.txt TOOL=MultiView
+
+	VIEW=BROWSE (or just BROWSE)
+	Force the BROWSE (VIEW) tool for data files. This is the default action
+	for viewing files.
+
+	EDIT
+	Force the EDIT tool for data files. Opens files in an editor for
+	modification. For text files, falls back to DefIcons def_ascii tooltype
+	or the $Editor environment variable if no EDIT tool is found via
+	datatypes.library.
+
+	INFO
+	Force the INFO tool for data files. Displays information about the file
+	using the datatypes.library INFO tool.
+
+	PRINT
+	Force the PRINT tool for data files. Sends files to a printer using the
+	datatypes.library PRINT tool.
+
+	MAIL
+	Force the MAIL tool for data files. Opens files in a mail client using
+	the datatypes.library MAIL tool.
+
+	SHOWALL
+	When opening drawers, show all files (including those without icons)
+	instead of only showing files with icons. This passes the DDFLAGS_SHOWALL
+	flag to OpenWorkbenchObjectA().
+
+   EXAMPLES
+	Open
+	Open the current directory in Workbench.
+
+	Open RAM:
+	Open the RAM: drawer in Workbench.
+
+	Open RAM: SHOWALL
+	Open the RAM: drawer showing all files, including those without icons.
+
+	Open test.txt
+	Open test.txt with the most appropriate tool (DefIcons default,
+	datatypes tool, or icon default tool).
+
+	Open test.txt BROWSE
+	Open test.txt with the BROWSE (VIEW) tool.
+
+	Open test.txt EDIT
+	Open test.txt with the EDIT tool. For text files, falls back to
+	DefIcons def_ascii or $Editor if no EDIT tool is available.
+
+	Open test.txt TOOL=Ed
+	Force Ed to open test.txt instead of the default tool.
+
+	Open MyFile.info
+	Show the Workbench icon information requester for MyFile.
+
+	Open MyFile.info EDIT
+	If an EDIT tool is available via datatypes for .info files, use it.
+	Otherwise, fall back to WBInfo.
+
+	Open file1.txt file2.txt file3.txt
+	Open all three files, each with its appropriate tool.
+
+	Open SYS:Tools/TextEdit
+	Launch the Edit command (executable).
+
+	Open MyLibrary.library
+	Skipped - binary assets (.library, .device, .datatype, .class, .image)
+	are not executed.
+
+   NOTES
+	Open uses only system services - no third-party libraries required.
+	DefIcons integration is optional but recommended for enhanced type
+	identification.
+
+	Executables are detected by:
+	- DefIcons type identifier 'tool', or
+	- datatypes group ID 'binary', and
+	- HUNK_HEADER format verification (0x000003F3)
+
+	Binary assets that are skipped:
+	- .library (shared libraries)
+	- .device (device drivers)
+	- .datatype (datatype classes)
+    - .gadget (BOOPSI gadget classes)
+	- .class (BOOPSI classes)
+	- .image (BOOPSI image classes)
+
+
